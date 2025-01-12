@@ -53,7 +53,7 @@ class BanMonitor:
 			if speed_limit_enabled:
 				upspeed_limit = int(await self.fetch("api/v2/transfer/uploadLimit"))
 				
-				if upspeed_limit < self.config["speed_threshold"]:
+				if upspeed_limit < self.config["upspeed_threshold"]:
 					self.log(f"Alternative speeds enabled and set to {upspeed_limit / 1024:.2f} KiB/s. Pausing monitoring...", level="WARN")
 					self.paused = True
 					
@@ -61,11 +61,11 @@ class BanMonitor:
 						speed_limit_enabled = int(await self.fetch("api/v2/transfer/speedLimitsMode")) ==1
 						upspeed_limit = int(await self.fetch("api/v2/transfer/uploadLimit"))
 						
-						if not speed_limit_enabled or upspeed_limit >= self.config["speed_threshold"]:
+						if not speed_limit_enabled or upspeed_limit >= self.config["upspeed_threshold"]:
 							self.log("Alternative speeds disabled or raised. Resuming monitoring...", level="WARN")
 							self.paused = False
-							break
-							
+						break
+						
 						await asyncio.sleep(self.config["check_interval"])
 			else:
 				self.paused = False
@@ -105,7 +105,7 @@ class BanMonitor:
 							self.log(f"Peer {ip}:{port} is no longer present at iteration {i}. Discarding...", level="WARN")
 							if (ip, port) in peer_speeds:
 								del peer_speeds[(ip, port)]
-								break
+							break
 						
 						if i == 0:
 							self.log(f"Tracking {ip}:{port} for torrent: {torrent_hash}")
@@ -128,9 +128,9 @@ class BanMonitor:
 				avg_speed = sum(speeds) / len(speeds)
 				peer_averages[(ip, port)] = avg_speed
 				
-				if avg_speed > 0 and avg_speed < self.config["speed_threshold"]:
+				if avg_speed > 0 and avg_speed < self.config["upspeed_threshold"]:
 					self.log(f"Peer {ip}:{port} with average speed: {avg_speed / 1024:.2f} KB/s. Banning...")
-				elif avg_speed > self.config["speed_threshold"]:
+				elif avg_speed > self.config["upspeed_threshold"]:
 					self.log(f"Adding exception for {ip}:{port} with average speed {avg_speed / 1024:.2f} KB/s.")
 					self.tracked_peers.add((ip, port))
 		
@@ -140,7 +140,7 @@ class BanMonitor:
 		peer_averages = await self.track_speeds(torrent_hash)
 		
 		for (ip, port), avg_speed in peer_averages.items():
-			if avg_speed > 0 and avg_speed < self.config["speed_threshold"]:
+			if avg_speed > 0 and avg_speed < self.config["upspeed_threshold"]:
 				try:
 					async with self.session.post(f"{self.config['url']}/api/v2/transfer/banPeers", data={"peers": f"{ip}:{port}"}) as response:
 						if response.status == 200:
