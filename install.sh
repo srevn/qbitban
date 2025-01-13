@@ -8,9 +8,9 @@ pip install pyinstaller
 pyinstaller --name qbitban qbitban.py
 chmod +x qbitban
 chmod +x dist/qbitban/qbitban
-mv dist/qbitban /usr/local/bin/
-mv qbitban.json /usr/local/etc/
-mv qbitban /usr/local/etc/rc.d/
+cp -r dist/qbitban /usr/local/bin/
+cp qbitban.json /usr/local/etc/
+cp qbitban /usr/local/etc/rc.d/
 cd .. && rm -rf qbitban
 
 echo "To enable run 'sysrc qbitban_enable=YES' and 'service qbitban start'"
