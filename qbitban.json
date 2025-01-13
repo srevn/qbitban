@@ -5,6 +5,7 @@
     "upspeed_threshold": 204800,
     "upspeed_samples": 5,
     "upspeed_interval": 2,
+    "min_seeders": 2,
     "check_interval": 10,
     "reset_interval": 3600,
     "max_retries": 3,

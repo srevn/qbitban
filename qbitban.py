@@ -27,7 +27,7 @@ class QBitClient:
 			try:
 				async with self.session.post(f"{self.url}/api/v2/auth/login", data=self.auth) as response:
 					if response.status == 200:
-						self.log("Connected to qBittorrent successfully.")
+						self.log("Connected to qBittorrent successfully.", level="INFO")
 						return True
 			except aiohttp.ClientConnectionError as e:
 				self.log(f"Connection error: {e}", level="ERROR")
@@ -85,7 +85,7 @@ class PeerTracker:
 								del peer_speeds[(ip, port)]
 							break
 						if i == 0:
-							self.log(f"Tracking {ip}:{port} for torrent: {torrent_hash}")
+							self.log(f"Tracking {ip}:{port} for torrent: {torrent_hash}", level="INFO")
 						
 						current_speed = peers[peer_id]["up_speed"]
 						peer_speeds[(ip, port)].append(current_speed)
@@ -113,12 +113,15 @@ class PeerTracker:
 			self.tracked_peers.clear()
 
 class BanMonitor:
-	def __init__(self, logger, client, peer_tracker, check_interval, upspeed_threshold):
+	def __init__(self, logger, client, peer_tracker, min_seeders, reset_interval, check_interval, upspeed_threshold):
 		self.log = logger
 		self.client = client
 		self.peer_tracker = peer_tracker
+		self.min_seeders = min_seeders
+		self.reset_interval = reset_interval
 		self.check_interval = check_interval
 		self.upspeed_threshold = upspeed_threshold
+		self.tracked_torrents = set()
 
 	async def speed_limit(self):
 		try:
@@ -145,10 +148,20 @@ class BanMonitor:
 
 	async def uploading_torrents(self):
 		torrents = await self.client.fetch("api/v2/torrents/info", {"filter": "active"})
-		return [
-			torrent for torrent in torrents
-			if torrent["state"] in {"uploading"} and torrent["upspeed"] > 0
-		]
+		
+		for torrent in torrents:
+			if torrent["state"] in {"uploading"} and torrent["upspeed"] > 0:
+				if torrent["num_complete"] >= self.min_seeders:
+					if torrent["hash"] in self.tracked_torrents:
+						self.tracked_torrents.remove(torrent["hash"])
+					yield torrent
+				else:
+					if torrent["hash"] not in self.tracked_torrents:
+						if torrent["num_complete"] == 1:
+							self.log(f"Adding exception for {torrent['hash']}. You are the last seeder.", level="INFO")
+						else:	
+							self.log(f"Adding exception for {torrent['hash']} with {torrent['num_complete']} seeders.", level="INFO")
+						self.tracked_torrents.add(torrent["hash"])
 
 	async def peer_monitor(self, torrent_hash):
 		peer_averages = await self.peer_tracker.track_speeds(torrent_hash)
@@ -156,11 +169,11 @@ class BanMonitor:
 		for (ip, port), avg_speed in peer_averages.items():
 			if 0 < avg_speed < self.upspeed_threshold:
 				if await self.ban_peer(ip, port):
-					self.log(f"Banned peer {ip}:{port} with average upload speed {avg_speed / 1024:.2f} KB/s")
+					self.log(f"Banned peer {ip}:{port} with average upload speed {avg_speed / 1024:.2f} KB/s", level="INFO")
 				else:
 					self.log(f"Failed to ban peer {ip}:{port}", level="ERROR")
 			elif avg_speed >= self.upspeed_threshold:
-				self.log(f"Adding exception for {ip}:{port} with average speed {avg_speed / 1024:.2f} KB/s")
+				self.log(f"Adding exception for {ip}:{port} with average speed {avg_speed / 1024:.2f} KB/s", level="INFO")
 				self.peer_tracker.tracked_peers.add((ip, port))
 
 	async def ban_peer(self, ip, port):
@@ -174,13 +187,18 @@ class BanMonitor:
 		while True:
 			try:
 				if not await self.speed_limit():
-					active_torrents = await self.uploading_torrents()
-					if active_torrents:
-						await asyncio.gather(*(self.peer_monitor(torrent["hash"]) for torrent in active_torrents))
+					async for torrent in self.uploading_torrents():
+						await self.peer_monitor(torrent["hash"])
 				await asyncio.sleep(self.check_interval)
 			
 			except Exception as e:
 				self.log(f"An error occurred during torrent monitoring: {str(e)}", level="ERROR")
+
+	async def reset_tracked_torrents(self):
+		while True:
+			await asyncio.sleep(self.reset_interval)
+			self.log("Resetting exceptions for tracked torrents.", level="WARN")
+			self.tracked_torrents.clear()
 
 class Qbitban:
 	def __init__(self, config_path):
@@ -208,6 +226,8 @@ class Qbitban:
 			logger = self.log,
 			client = self.client,
 			peer_tracker = self.peer_tracker,
+			min_seeders = self.config["min_seeders"],
+			reset_interval = self.config["reset_interval"],
 			check_interval = self.config["check_interval"],
 			upspeed_threshold = self.config["upspeed_threshold"]
 		)
@@ -226,6 +246,7 @@ class Qbitban:
 				
 				await asyncio.gather(
 					self.ban_monitor.torrent_monitor(),
+					self.ban_monitor.reset_tracked_torrents(),
 					self.peer_tracker.reset_tracked_peers()
 				)
 			
