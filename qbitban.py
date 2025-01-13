@@ -6,7 +6,8 @@ import argparse
 from collections import defaultdict, deque
 
 class QBitClient:
-	def __init__(self, url, username, password, max_retries, retry_delay):
+	def __init__(self, logger, url, username, password, max_retries, retry_delay):
+		self.log = logger
 		self.url = url
 		self.auth = {"username": username, "password": password}
 		self.max_retries = max_retries
@@ -26,15 +27,16 @@ class QBitClient:
 			try:
 				async with self.session.post(f"{self.url}/api/v2/auth/login", data=self.auth) as response:
 					if response.status == 200:
+						self.log("Connected to qBittorrent successfully.")
 						return True
-			except aiohttp.ClientError:
+			except aiohttp.ClientConnectionError as e:
+				self.log(f"Connection error: {e}", level="ERROR")
 				if attempt < self.max_retries - 1:
 					await asyncio.sleep(self.retry_delay)
-		raise Exception("Failed to connect to qBittorrent after multiple attempts")
+		raise ConnectionError("Failed to connect to qBittorrent after multiple attempts.")
 
 	async def fetch(self, endpoint, params=None):
-		url = f"{self.url}/{endpoint}"
-		async with self.session.get(url, params=params) as response:
+		async with self.session.get(f"{self.url}/{endpoint}", params=params) as response:
 			response.raise_for_status()
 			content_type = response.headers.get('Content-Type')
 			
@@ -46,9 +48,9 @@ class QBitClient:
 				raise ValueError(f"Unexpected content type: {content_type}")
 
 class PeerTracker:
-	def __init__(self, client, logger, reset_interval, upspeed_samples, upspeed_interval):
-		self.client = client
+	def __init__(self, logger, client, reset_interval, upspeed_samples, upspeed_interval):
 		self.log = logger
+		self.client = client
 		self.reset_interval = reset_interval
 		self.upspeed_samples = upspeed_samples
 		self.upspeed_interval = upspeed_interval
@@ -82,7 +84,6 @@ class PeerTracker:
 							if (ip, port) in peer_speeds:
 								del peer_speeds[(ip, port)]
 							break
-						
 						if i == 0:
 							self.log(f"Tracking {ip}:{port} for torrent: {torrent_hash}")
 						
@@ -112,9 +113,9 @@ class PeerTracker:
 			self.tracked_peers.clear()
 
 class BanMonitor:
-	def __init__(self, client, logger, peer_tracker, check_interval, upspeed_threshold):
-		self.client = client
+	def __init__(self, logger, client, peer_tracker, check_interval, upspeed_threshold):
 		self.log = logger
+		self.client = client
 		self.peer_tracker = peer_tracker
 		self.check_interval = check_interval
 		self.upspeed_threshold = upspeed_threshold
@@ -125,15 +126,15 @@ class BanMonitor:
 			if speed_limit_enabled:
 				upspeed_limit = int(await self.client.fetch("api/v2/transfer/uploadLimit"))
 				if upspeed_limit < self.upspeed_threshold:
-					self.log(f"Speed limit enabled and set to {upspeed_limit / 1024:.2f} KiB/s. Pausing monitoring...", level="WARN")
+					self.log(f"Speed limit enabled and set to {upspeed_limit / 1024:.2f} KB/s. Pausing...", level="WARN")
 					while True:
 						speed_limit_enabled = int(await self.client.fetch("api/v2/transfer/speedLimitsMode")) == 1
 						if not speed_limit_enabled:
-							self.log("Speed limit disabled. Resuming monitoring...", level="WARN")
+							self.log("Speed limit disabled. Resuming...", level="WARN")
 							return False
 						upspeed_limit = int(await self.client.fetch("api/v2/transfer/uploadLimit"))
 						if upspeed_limit >= self.upspeed_threshold:
-							self.log("Speed limit raised. Resuming monitoring...", level="WARN")
+							self.log(f"Speed limit raised to {upspeed_limit / 1024:.2f} KB/s. Resuming...", level="WARN")
 							return False
 						await asyncio.sleep(self.check_interval)
 			return False
@@ -179,7 +180,7 @@ class BanMonitor:
 				await asyncio.sleep(self.check_interval)
 			
 			except Exception as e:
-				self.log(f"Error in ban monitor: {str(e)}", level="ERROR")
+				self.log(f"An error occurred during torrent monitoring: {str(e)}", level="ERROR")
 
 class Qbitban:
 	def __init__(self, config_path):
@@ -187,6 +188,7 @@ class Qbitban:
 			self.config = json.load(config_file)
 		
 		self.client = QBitClient(
+			logger = self.log,
 			url = self.config["url"],
 			username = self.config["username"],
 			password = self.config["password"],
@@ -195,16 +197,16 @@ class Qbitban:
 		)
 		
 		self.peer_tracker = PeerTracker(
-			client = self.client,
 			logger = self.log,
+			client = self.client,
 			reset_interval = self.config["reset_interval"],
 			upspeed_samples = self.config["upspeed_samples"],
 			upspeed_interval = self.config["upspeed_interval"]
 		)
 		
 		self.ban_monitor = BanMonitor(
-			client = self.client,
 			logger = self.log,
+			client = self.client,
 			peer_tracker = self.peer_tracker,
 			check_interval = self.config["check_interval"],
 			upspeed_threshold = self.config["upspeed_threshold"]
@@ -221,7 +223,6 @@ class Qbitban:
 			try:
 				self.client.session = session
 				await self.client.connect()
-				self.log("Connected to qBittorrent successfully.")
 				
 				await asyncio.gather(
 					self.ban_monitor.torrent_monitor(),
