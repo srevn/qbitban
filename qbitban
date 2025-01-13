@@ -1,0 +1,43 @@
+#!/bin/sh
+
+# PROVIDE: qbitban
+# REQUIRE: DAEMON qbittorrent
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="qbitban"
+rcvar="qbitban_enable"
+
+load_rc_config $name
+
+: ${qbitban_enable:="NO"}
+: ${qbitban_user:="root"}
+: ${qbitban_config:="/usr/local/etc/qbitban.json"}
+
+pidfile="/var/run/${name}.pid"
+logfile="/var/log/${name}.log"
+
+start_cmd="${name}_start"
+stop_cmd="${name}_stop"
+
+command="/usr/local/bin/qbitban/qbitban"
+command_args="--config ${qbitban_config}"
+
+qbitban_start() {
+	echo "Starting ${name}..."
+	su -m ${qbitban_user} -c "${command} ${command_args} > ${logfile} 2>&1 & echo \$! > ${pidfile}"
+	echo "${name} started."
+}
+
+qbitban_stop() {
+	echo "Stopping ${name}..."
+	if [ -f ${pidfile} ]; then
+		kill -TERM $(cat ${pidfile}) && rm -f ${pidfile}
+		echo "${name} stopped."
+	else
+		echo "No pidfile found, is ${name} running?"
+	fi
+}
+
+run_rc_command "$1"
