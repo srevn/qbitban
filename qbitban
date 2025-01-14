@@ -13,20 +13,33 @@ load_rc_config $name
 
 : ${qbitban_enable:="NO"}
 : ${qbitban_user:="root"}
+: ${qbitban_group:="wheel"}
 : ${qbitban_config:="/usr/local/etc/qbitban.json"}
 
 pidfile="/var/run/${name}.pid"
 logfile="/var/log/${name}.log"
 
+start_precmd="${name}_precmd"
 start_cmd="${name}_start"
 stop_cmd="${name}_stop"
 
 command="/usr/local/bin/qbitban/qbitban"
 command_args="--config ${qbitban_config}"
 
+qbitban_precmd()
+{
+	if [ ! -f ${logfile} ]; then
+		install -m 640 -o ${qbitban_user} -g ${qbitban_group} /dev/null ${logfile}
+	fi
+	
+	if [ ! -f ${pidfile} ]; then
+		install -m 644 -o ${qbitban_user} -g ${qbitban_group} /dev/null ${pidfile}
+	fi
+}
+
 qbitban_start() {
 	echo "Starting ${name}..."
-	su -m ${qbitban_user} -c "${command} ${command_args} > ${logfile} 2>&1 & echo \$! > ${pidfile}"
+	su -m ${qbitban_user} -c "${command} ${command_args} & echo \$! > ${pidfile}"
 	echo "${name} started."
 }
 
