@@ -5,6 +5,7 @@ import logging
 import asyncio
 import aiohttp
 import argparse
+import signal
 from collections import defaultdict, deque
 
 class QBitClient:
@@ -14,14 +15,6 @@ class QBitClient:
 		self.max_retries = max_retries
 		self.retry_delay = retry_delay
 		self.session = None
-
-	async def __aenter__(self):
-		self.session = aiohttp.ClientSession()
-		return self
-
-	async def __aexit__(self, exc_type, exc_val, exc_tb):
-		if self.session:
-			await self.session.close()
 
 	async def connect(self):
 		for attempt in range(self.max_retries):
@@ -48,6 +41,11 @@ class QBitClient:
 				return await response.text()
 			else:
 				raise ValueError(f"Unexpected content type: {content_type}")
+
+	async def close(self):
+		if self.session:
+			await self.session.close()
+			self.session = None
 
 class PeerTracker:
 	def __init__(self, client, reset_interval, upspeed_samples, upspeed_interval):
@@ -145,9 +143,15 @@ class PeerTracker:
 
 	async def reset_tracked_peers(self):
 		while True:
-			await asyncio.sleep(self.reset_interval)
-			log.debug("Resetting exceptions for tracked peers.")
-			self.tracked_peers.clear()
+			try:
+				await asyncio.sleep(self.reset_interval)
+				if asyncio.current_task().cancelled():
+					break
+				log.debug("Resetting exceptions for tracked peers.")
+				self.tracked_peers.clear()
+			
+			except asyncio.CancelledError:
+				raise
 
 class BanMonitor:
 	def __init__(self, client, peer_tracker, min_seeders, reset_interval, check_interval, upspeed_threshold):
@@ -235,6 +239,9 @@ class BanMonitor:
 	async def torrent_monitor(self):
 		while True:
 			try:
+				if asyncio.current_task().cancelled():
+					break
+				
 				if not await self.speed_limit():
 					async for torrent_hash in self.uploading_torrents():
 						
@@ -251,15 +258,24 @@ class BanMonitor:
 						self.active_monitors[torrent_hash] = task
 					
 				await asyncio.sleep(self.check_interval)
+				
+			except asyncio.CancelledError:
+				raise
 			
 			except Exception as e:
 				log.error(f"An error occurred during torrent monitoring: {str(e)}")
 
 	async def reset_tracked_torrents(self):
 		while True:
-			await asyncio.sleep(self.reset_interval)
-			log.debug("Resetting exceptions for tracked torrents.")
-			self.tracked_torrents.clear()
+			try:
+				await asyncio.sleep(self.reset_interval)
+				if asyncio.current_task().cancelled():
+					break
+				log.debug("Resetting exceptions for tracked torrents.")
+				self.tracked_torrents.clear()
+			
+			except asyncio.CancelledError:
+				raise
 
 class Qbitban:
 	def __init__(self, config_path):
@@ -315,32 +331,57 @@ class Qbitban:
 			raise
 
 	async def main(self):
+		self.shutdown_event = asyncio.Event()
+		loop = asyncio.get_running_loop()
+		signals = (signal.SIGTERM, signal.SIGINT)
+		for sig in signals:
+			loop.add_signal_handler(
+				sig,
+				lambda s=sig: asyncio.create_task(self.shutdown(sig))
+			)
+		
 		async with aiohttp.ClientSession() as session:
 			try:
 				self.client.session = session
 				await self.client.connect()
 				
-				await asyncio.gather(
-					self.ban_monitor.torrent_monitor(),
-					self.ban_monitor.reset_tracked_torrents(),
-					self.peer_tracker.reset_tracked_peers()
-				)
+				self.tasks = [
+					asyncio.create_task(self.ban_monitor.torrent_monitor()),
+					asyncio.create_task(self.ban_monitor.reset_tracked_torrents()),
+					asyncio.create_task(self.peer_tracker.reset_tracked_peers())
+				]
+				
+				await self.shutdown_event.wait()
+				
+				for task in self.tasks:
+					task.cancel()
+				
+				await asyncio.wait(self.tasks, timeout=5)
 			
 			except Exception as e:
 				log.critical(f"Critical error: {str(e)}")
 				raise
 
+	async def shutdown(self, sig):
+		log.info(f"Received exit signal {sig.name}...")
+		
+		self.shutdown_event.set()
+		if self.client:
+			await self.client.close()
+		
+		log.info("Shutdown complete.")
+
 log = logging.getLogger()
 if __name__ == "__main__":
-    try:
-        parser = argparse.ArgumentParser(description="qbitban configuration")
-        parser.add_argument("--config", type=str, required=True)
-        args = parser.parse_args()
-        
-        log.debug("Starting application...")
-        qbitban = Qbitban(args.config)
-        asyncio.run(qbitban.main(), debug=False)
+	try:
+		parser = argparse.ArgumentParser(description="qbitban configuration")
+		parser.add_argument("--config", type=str, required=True)
+		args = parser.parse_args()
+		
+		log.debug("Starting application...")
+		qbitban = Qbitban(args.config)
+		asyncio.run(qbitban.main(), debug=False)
 	
-    except Exception as e:
-        log.error(f"Application error: {str(e)}", exc_info=True)
-        sys.exit(1)
+	except Exception as e:
+		log.error(f"Application error: {str(e)}", exc_info=True)
+		sys.exit(1)
