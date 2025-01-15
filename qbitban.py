@@ -281,6 +281,7 @@ class Qbitban:
 	def __init__(self, config_path):
 		with open(config_path, 'r') as config_file:
 			self.config = json.load(config_file)
+		
 		self.logger()
 		
 		self.client = QBitClient(
@@ -313,9 +314,9 @@ class Qbitban:
 			log_file = self.config["log_file"]
 			
 			format = logging.Formatter('[%(asctime)s] %(levelname)s: %(message)s', 
-			datefmt = '%Y-%m-%d %H:%M:%S')
+										datefmt = '%Y-%m-%d %H:%M:%S')
 			
-			file_handler = logging.FileHandler(log_file)
+			file_handler = logging.FileHandler(log_file, mode='w')
 			file_handler.setLevel(logging.INFO)
 			file_handler.setFormatter(format)
 			log.addHandler(file_handler)
