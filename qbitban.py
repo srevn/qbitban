@@ -332,13 +332,12 @@ class Qbitban:
 
 	async def main(self):
 		self.shutdown_event = asyncio.Event()
+		
 		loop = asyncio.get_running_loop()
-		signals = (signal.SIGTERM, signal.SIGINT)
+		signals = (signal.SIGTERM, signal.SIGINT, signal.SIGQUIT, signal.SIGHUP)
 		for sig in signals:
 			loop.add_signal_handler(
-				sig,
-				lambda s=sig: asyncio.create_task(self.shutdown(sig))
-			)
+				sig, lambda s=sig: asyncio.create_task(self.shutdown(s)))
 		
 		async with aiohttp.ClientSession() as session:
 			try:
@@ -352,10 +351,8 @@ class Qbitban:
 				]
 				
 				await self.shutdown_event.wait()
-				
 				for task in self.tasks:
 					task.cancel()
-				
 				await asyncio.wait(self.tasks, timeout=5)
 			
 			except Exception as e:
