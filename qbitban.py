@@ -1,11 +1,10 @@
 import sys
-import time
 import json
+import signal
 import logging
 import asyncio
 import aiohttp
 import argparse
-import signal
 from collections import defaultdict, deque
 
 class QBitClient:
@@ -23,6 +22,7 @@ class QBitClient:
 					if response.status == 200:
 						log.info("Connected to qBittorrent successfully.")
 						return True
+			
 			except aiohttp.ClientConnectionError as e:
 				log.error(f"Connection error: {str(e)}")
 				if attempt < self.max_retries - 1:
@@ -310,8 +310,8 @@ class Qbitban:
 	
 	def logger(self):
 		try:
-			log.setLevel(logging.DEBUG)
 			log_file = self.config["log_file"]
+			log.setLevel(logging.DEBUG)
 			
 			format = logging.Formatter('[%(asctime)s] %(levelname)s: %(message)s', 
 										datefmt = '%Y-%m-%d %H:%M:%S')
