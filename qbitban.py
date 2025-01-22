@@ -34,16 +34,20 @@ class QBitClient:
 		raise ConnectionError("Failed to connect to qBittorrent after multiple attempts.")
 
 	async def fetch(self, endpoint, params=None):
-		async with self.session.get(f"{self.url}/{endpoint}", params=params) as response:
-			response.raise_for_status()
-			content_type = response.headers.get('Content-Type')
-			
-			if 'application/json' in content_type:
-				return await response.json()
-			elif 'text/plain' in content_type:
-				return await response.text()
-			else:
-				raise ValueError(f"Unexpected content type: {content_type}")
+		try:
+			async with self.session.get(f"{self.url}/{endpoint}", params=params) as response:
+				response.raise_for_status()
+				content_type = response.headers.get('Content-Type')
+				
+				if 'application/json' in content_type:
+					return await response.json()
+				elif 'text/plain' in content_type:
+					return await response.text()
+				else:
+					raise ValueError(f"Unexpected content type: {content_type}")
+		
+		except Exception as e:
+			log.error(f"Unexpected connection error: {str(e)}")
 
 	async def clear_banned_ips(self):
 		data = {"json": json.dumps({"banned_IPs": ""})}
@@ -128,7 +132,7 @@ class PeerTracker:
 						peers_data = await self.client.fetch("api/v2/sync/torrentPeers", {"hash": torrent_hash})
 						peers = peers_data.get("peers", {})
 						if peer_id not in peers:
-							log.warning(f"Peer {ip}:{port} is no longer present at iteration {i}. Discarding...")
+							log.info(f"Peer {ip}:{port} is no longer present at iteration {i}. Discarding...")
 							if (ip, port) in peer_speeds:
 								del peer_speeds[(ip, port)]
 							break
@@ -196,18 +200,22 @@ class BanMonitor:
 	async def uploading_torrents(self):
 		torrents = await self.client.fetch("api/v2/torrents/info", {"filter": "active"})
 		
-		for torrent in torrents:
-			if not (torrent["state"] in {"uploading"} and torrent["upspeed"] > 0):
-				continue
-			
-			torrent_hash = torrent["hash"]
-			if torrent["num_complete"] >= self.min_seeders:
-				self.tracked_torrents.pop(torrent_hash, None)
-				yield torrent_hash
-			elif torrent_hash not in self.tracked_torrents:
-				log.info(f"Adding exception for {torrent_hash} with {torrent['num_complete']} "
-						f"{'seeder' if torrent['num_complete'] == 1 else 'seeders'}.")
-				self.tracked_torrents[torrent_hash] = True
+		try:
+			for torrent in torrents:
+				if not (torrent["state"] in {"uploading"} and torrent["upspeed"] > 0):
+					continue
+				
+				torrent_hash = torrent["hash"]
+				if torrent["num_complete"] >= self.min_seeders:
+					self.tracked_torrents.pop(torrent_hash, None)
+					yield torrent_hash
+				elif torrent_hash not in self.tracked_torrents:
+					log.info(f"Adding exception for {torrent_hash} with {torrent['num_complete']} "
+							f"{'seeder' if torrent['num_complete'] == 1 else 'seeders'}.")
+					self.tracked_torrents[torrent_hash] = True
+		
+		except Exception as e:
+			log.error(f"Unexpected error processing torrent: {str(e)}")
 
 	async def peer_monitor(self, torrent_hash):
 		try:
