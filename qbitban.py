@@ -1,11 +1,14 @@
-import sys
-import json
-import signal
-import logging
-import asyncio
-import aiohttp
 import argparse
+import asyncio
+import json
+import logging
+import signal
+import sys
 from collections import defaultdict, deque
+
+import aiohttp
+from cachetools import TTLCache
+
 
 class QBitClient:
 	def __init__(self, url, username, password, max_retries, retry_delay):
@@ -42,6 +45,18 @@ class QBitClient:
 			else:
 				raise ValueError(f"Unexpected content type: {content_type}")
 
+	async def clear_banned_ips(self):
+		data = {"json": json.dumps({"banned_IPs": ""})}
+		try:
+			async with self.session.post(f"{self.url}/api/v2/app/setPreferences", data=data) as response:
+				response.raise_for_status()
+				log.info("Successfully cleared previously banned IPs.")
+				return True
+		
+		except Exception as e:
+			log.error(f"Failed to clear banned IPs list: {str(e)}")
+			return False
+
 	async def close(self):
 		if self.session:
 			await self.session.close()
@@ -50,10 +65,9 @@ class QBitClient:
 class PeerTracker:
 	def __init__(self, client, reset_interval, upspeed_samples, upspeed_interval):
 		self.client = client
-		self.reset_interval = reset_interval
 		self.upspeed_samples = upspeed_samples
 		self.upspeed_interval = upspeed_interval
-		self.tracked_peers = set()
+		self.tracked_peers = TTLCache(maxsize=100, ttl=reset_interval)
 
 	def speed_analyzer(self, speeds, ema_weight=0.8, alpha=0.3):
 		if not speeds:
@@ -101,7 +115,7 @@ class PeerTracker:
 				ip = peer_info["ip"]
 				port = peer_info.get("port", 6881)
 				if (ip, port) in self.tracked_peers:
-					log.debug(f"Skipping measurments for {ip}:{port} as it's listed in the exceptions.")
+					log.debug(f"Skipping measurements for {ip}:{port} as it's listed in the exceptions.")
 					continue
 				
 				initial_speed = peer_info.get("up_speed", 0)
@@ -141,27 +155,14 @@ class PeerTracker:
 			log.error(f"Error while tracking peer speeds: {str(e)}")
 			return {}
 
-	async def reset_tracked_peers(self):
-		while True:
-			try:
-				await asyncio.sleep(self.reset_interval)
-				if asyncio.current_task().cancelled():
-					break
-				log.debug("Resetting exceptions for tracked peers.")
-				self.tracked_peers.clear()
-			
-			except asyncio.CancelledError:
-				raise
-
 class BanMonitor:
 	def __init__(self, client, peer_tracker, min_seeders, reset_interval, check_interval, upspeed_threshold):
 		self.client = client
 		self.peer_tracker = peer_tracker
 		self.min_seeders = min_seeders
-		self.reset_interval = reset_interval
 		self.check_interval = check_interval
 		self.upspeed_threshold = upspeed_threshold
-		self.tracked_torrents = set()
+		self.tracked_torrents = TTLCache(maxsize=100, ttl=reset_interval)
 		self.active_monitors = {}
 
 	async def speed_limit(self):
@@ -201,12 +202,12 @@ class BanMonitor:
 			
 			torrent_hash = torrent["hash"]
 			if torrent["num_complete"] >= self.min_seeders:
-				self.tracked_torrents.discard(torrent_hash)
+				self.tracked_torrents.pop(torrent_hash, None)
 				yield torrent_hash
 			elif torrent_hash not in self.tracked_torrents:
 				log.info(f"Adding exception for {torrent_hash} with {torrent['num_complete']} "
 						f"{'seeder' if torrent['num_complete'] == 1 else 'seeders'}.")
-				self.tracked_torrents.add(torrent_hash)
+				self.tracked_torrents[torrent_hash] = True
 
 	async def peer_monitor(self, torrent_hash):
 		try:
@@ -221,7 +222,7 @@ class BanMonitor:
 				
 				elif avg_speed >= self.upspeed_threshold:
 					log.info(f"Adding exception for {ip}:{port} with average speed {avg_speed / 1024:.2f} KB/s.")
-					self.peer_tracker.tracked_peers.add((ip, port))
+					self.peer_tracker.tracked_peers[(ip, port)] = True
 		
 		finally:
 			if torrent_hash in self.active_monitors:
@@ -265,18 +266,6 @@ class BanMonitor:
 			except Exception as e:
 				log.error(f"An error occurred during torrent monitoring: {str(e)}")
 
-	async def reset_tracked_torrents(self):
-		while True:
-			try:
-				await asyncio.sleep(self.reset_interval)
-				if asyncio.current_task().cancelled():
-					break
-				log.debug("Resetting exceptions for tracked torrents.")
-				self.tracked_torrents.clear()
-			
-			except asyncio.CancelledError:
-				raise
-
 class Qbitban:
 	def __init__(self, config_path):
 		with open(config_path, 'r') as config_file:
@@ -314,7 +303,7 @@ class Qbitban:
 			log.setLevel(logging.DEBUG)
 			
 			format = logging.Formatter('[%(asctime)s] %(levelname)s: %(message)s', 
-										datefmt = '%Y-%m-%d %H:%M:%S')
+									  datefmt = '%Y-%m-%d %H:%M:%S')
 			
 			file_handler = logging.FileHandler(log_file, mode='w')
 			file_handler.setLevel(logging.INFO)
@@ -345,16 +334,17 @@ class Qbitban:
 				self.client.session = session
 				await self.client.connect()
 				
-				self.tasks = [
-					asyncio.create_task(self.ban_monitor.torrent_monitor()),
-					asyncio.create_task(self.ban_monitor.reset_tracked_torrents()),
-					asyncio.create_task(self.peer_tracker.reset_tracked_peers())
-				]
+				if self.config.get("clear_banned_ips", False):
+					await self.client.clear_banned_ips()
+				
+				self.tasks = [asyncio.create_task(self.ban_monitor.torrent_monitor())]
 				
 				await self.shutdown_event.wait()
+				
 				for task in self.tasks:
 					task.cancel()
-				await asyncio.wait(self.tasks, timeout=5)
+				
+				await asyncio.gather(*self.tasks, return_exceptions=True)
 			
 			except Exception as e:
 				log.critical(f"Critical error: {str(e)}")
