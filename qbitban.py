@@ -116,7 +116,7 @@ class PeerTracker:
 				return {}
 			
 			for peer_id, peer_info in initial_peers.items():
-				ip = peer_info["ip"]
+				ip = peer_info.get("ip")
 				port = peer_info.get("port", 6881)
 				if (ip, port) in self.tracked_peers:
 					log.debug(f"Skipping measurements for {ip}:{port} as it's listed in the exceptions.")
@@ -206,13 +206,29 @@ class BanMonitor:
 					continue
 				
 				torrent_hash = torrent["hash"]
+				
 				if torrent["num_complete"] >= self.min_seeders:
 					self.tracked_torrents.pop(torrent_hash, None)
 					yield torrent_hash
+				
 				elif torrent_hash not in self.tracked_torrents:
 					log.info(f"Adding exception for {torrent_hash} with {torrent['num_complete']} "
 							f"{'seeder' if torrent['num_complete'] == 1 else 'seeders'}.")
 					self.tracked_torrents[torrent_hash] = True
+					
+					try:
+						peers_data = await self.client.fetch("api/v2/sync/torrentPeers", {"hash": torrent_hash})
+						peers = peers_data.get("peers", {})
+						
+						for peer_id, peer_info in peers.items():
+							ip = peer_info.get("ip")
+							port = peer_info.get("port", 6881)
+							if ip and port:
+								log.debug(f"Adding wider exception for {torrent_hash} with {ip}:{port}.")
+								self.peer_tracker.tracked_peers[(ip, port)] = True
+					
+					except Exception as e:
+						log.error(f"Error fetching peers for wider exception: {str(e)}")
 		
 		except Exception as e:
 			log.error(f"Unexpected error processing torrent: {str(e)}")
