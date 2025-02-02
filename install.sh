@@ -1,5 +1,5 @@
 #!/bin/sh
-git clone https://github.com/asrevni/qbitban
+git clone https://github.com/srevni/qbitban
 cd qbitban
 python -m venv venv
 source venv/bin/activate
