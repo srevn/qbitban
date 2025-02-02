@@ -2,14 +2,12 @@
     "url": "http://127.0.0.1:8080",
     "username": "admin",
     "password": "adminadmin",
-    "max_retries": 3,
-    "retry_delay": 5,
-    "upspeed_threshold": 204800,
+    "upspeed_threshold": 10240,
     "upspeed_samples": 6,
     "upspeed_interval": 2,
-    "min_seeders": 2,
-    "check_interval": 10,
+    "min_seeders": 3,
+    "check_interval": 5,
     "reset_interval": 3600,
-    "clear_banned_ips": true,
+    "clear_banned_ips": false,
     "log_file_path": "/var/log/qbitban.log"
 }
