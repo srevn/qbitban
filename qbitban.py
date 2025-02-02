@@ -11,45 +11,63 @@ from cachetools import TTLCache
 
 
 class QBitClient:
-	def __init__(self, url, username, password, max_retries, retry_delay):
+	def __init__(self, url, username, password):
 		self.url = url
 		self.auth = {"username": username, "password": password}
-		self.max_retries = max_retries
-		self.retry_delay = retry_delay
+		self.connected = asyncio.Event()
 		self.session = None
 
 	async def connect(self):
-		for attempt in range(self.max_retries):
-			try:
-				async with self.session.post(f"{self.url}/api/v2/auth/login", data=self.auth) as response:
-					if response.status == 200:
-						log.info("Connected to qBittorrent successfully.")
-						return True
-			
-			except aiohttp.ClientConnectionError as e:
-				log.error(f"Connection error: {str(e)}")
-				if attempt < self.max_retries - 1:
-					await asyncio.sleep(self.retry_delay)
+		if self.session:
+			await self.session.close()
 		
-		raise ConnectionError("Failed to connect to qBittorrent after multiple attempts.")
+		self.session = aiohttp.ClientSession()
+		try:
+			async with self.session.post(f"{self.url}/api/v2/auth/login", data=self.auth) as response:
+				if response.status == 200:
+					log.info("Connected to qBittorrent successfully.")
+					self.connected.set()
+					return True
+				else:
+					log.error("Login failed: Invalid credentials.")
+					self.connected.clear()
+					raise Exception
+		
+		except aiohttp.ClientConnectionError as e:
+			log.debug(f"Connection error: {str(e)}")
+		
+		except Exception as e:
+			log.debug(f"Unexpected error during connect: {str(e)}")
+		
+		self.connected.clear()
+		return False
 
 	async def fetch(self, endpoint, params=None):
+		if not self.connected.is_set():
+			raise aiohttp.ClientConnectionError("Not connected to qBittorrent.")
+		
 		try:
 			async with self.session.get(f"{self.url}/{endpoint}", params=params) as response:
 				response.raise_for_status()
-				content_type = response.headers.get('Content-Type')
-				
-				if 'application/json' in content_type:
+				content_type = response.headers.get("Content-Type", "")
+		
+				if "application/json" in content_type:
 					return await response.json()
-				elif 'text/plain' in content_type:
+				elif "text/plain" in content_type:
 					return await response.text()
 				else:
 					raise ValueError(f"Unexpected content type: {content_type}")
 		
+		except aiohttp.ClientConnectionError as e:
+			log.debug(f"Connection error in fetch: {str(e)}")
+			self.connected.clear()
+			raise
 		except Exception as e:
-			log.error(f"Unexpected connection error: {str(e)}")
+			log.debug(f"Error in fetch: {str(e)}")
+			self.connected.clear()
+			raise
 
-	async def clear_banned_ips(self):
+	async def clear_ips(self):
 		data = {"json": json.dumps({"banned_IPs": ""})}
 		try:
 			async with self.session.post(f"{self.url}/api/v2/app/setPreferences", data=data) as response:
@@ -58,13 +76,15 @@ class QBitClient:
 				return True
 		
 		except Exception as e:
-			log.error(f"Failed to clear banned IPs list: {str(e)}")
+			log.debug(f"Failed to clear banned IPs list: {str(e)}")
 			return False
 
 	async def close(self):
 		if self.session:
 			await self.session.close()
 			self.session = None
+		
+		self.connected.clear()
 
 class PeerTracker:
 	def __init__(self, client, reset_interval, upspeed_samples, upspeed_interval):
@@ -103,7 +123,7 @@ class PeerTracker:
 			return combined_speed
 		
 		except (TypeError, IndexError) as e:
-			log.error(f"Error while analyzing speed: {str(e)}")
+			log.debug(f"Error while analyzing speed: {str(e)}")
 			return 0
 
 	async def track_speed(self, torrent_hash):
@@ -144,7 +164,7 @@ class PeerTracker:
 						peer_speeds[(ip, port)].append(current_speed)
 					
 					except Exception as e:
-						log.error(f"Error fetching/updating peer data: {str(e)}")
+						log.debug(f"Error fetching/updating peer data: {str(e)}")
 						return {}
 					
 					await asyncio.sleep(self.upspeed_interval)
@@ -156,7 +176,7 @@ class PeerTracker:
 			}
 		
 		except Exception as e:
-			log.error(f"Error while tracking peer speeds: {str(e)}")
+			log.debug(f"Error while tracking peer speeds: {str(e)}")
 			return {}
 
 class BanMonitor:
@@ -171,6 +191,9 @@ class BanMonitor:
 
 	async def speed_limit(self):
 		try:
+			if not self.client.connected.is_set():
+				return False
+			
 			speed_limit_enabled = int(await self.client.fetch("api/v2/transfer/speedLimitsMode")) == 1
 			
 			if speed_limit_enabled:
@@ -193,8 +216,12 @@ class BanMonitor:
 			
 			return False
 		
+		except aiohttp.ClientConnectionError:
+			log.debug("Speed limit check skipped due to disconnection.")
+			return False
+		
 		except Exception as e:
-			log.error(f"Error checking alternative speed: {str(e)}")
+			log.debug(f"Error checking alternative speed: {str(e)}")
 			return False
 
 	async def uploading_torrents(self):
@@ -228,10 +255,10 @@ class BanMonitor:
 								self.peer_tracker.tracked_peers[(ip, port)] = True
 					
 					except Exception as e:
-						log.error(f"Error fetching peers for wider exception: {str(e)}")
+						log.debug(f"Error fetching peers for wider exception: {str(e)}")
 		
 		except Exception as e:
-			log.error(f"Unexpected error processing torrent: {str(e)}")
+			log.debug(f"Unexpected error processing torrent: {str(e)}")
 
 	async def peer_monitor(self, torrent_hash):
 		try:
@@ -242,7 +269,7 @@ class BanMonitor:
 					if await self.ban_peer(ip, port):
 						log.info(f"Banned peer {ip}:{port} with average upload speed {avg_speed / 1024:.2f} KB/s.")
 					else:
-						log.error(f"Failed to ban peer {ip}:{port}")
+						log.debug(f"Failed to ban peer {ip}:{port}")
 				
 				elif avg_speed >= self.upspeed_threshold:
 					log.info(f"Adding exception for {ip}:{port} with average speed {avg_speed / 1024:.2f} KB/s.")
@@ -258,7 +285,7 @@ class BanMonitor:
 				return response.status == 200
 		
 		except Exception as e:
-			log.error(f"An error occurred while sending peer data: {str(e)}")
+			log.debug(f"An error occurred while sending peer data: {str(e)}")
 			return False
 
 	async def torrent_monitor(self):
@@ -283,26 +310,32 @@ class BanMonitor:
 						self.active_monitors[torrent_hash] = task
 					
 				await asyncio.sleep(self.check_interval)
-				
+		
+			except aiohttp.ClientConnectionError as e:
+				log.debug(f"Connection error during monitoring: {str(e)}")
+				self.client.connected.clear()
+				await asyncio.sleep(self.check_interval)
+			
 			except asyncio.CancelledError:
 				raise
 			
 			except Exception as e:
-				log.error(f"An error occurred during torrent monitoring: {str(e)}")
+				log.debug(f"An error occurred during torrent monitoring: {str(e)}")
 
 class Qbitban:
 	def __init__(self, config_path):
 		with open(config_path, 'r') as config_file:
 			self.config = json.load(config_file)
 		
+		self.log_file = self.config["log_file"]
+		self.check_interval = self.config["check_interval"]
+		
 		self.logger()
 		
 		self.client = QBitClient(
 			url = self.config["url"],
 			username = self.config["username"],
-			password = self.config["password"],
-			max_retries = self.config["max_retries"],
-			retry_delay = self.config["retry_delay"]
+			password = self.config["password"]
 		)
 		
 		self.peer_tracker = PeerTracker(
@@ -323,13 +356,12 @@ class Qbitban:
 	
 	def logger(self):
 		try:
-			log_file = self.config["log_file"]
 			log.setLevel(logging.DEBUG)
 			
 			format = logging.Formatter('[%(asctime)s] %(levelname)s: %(message)s', 
 									  datefmt = '%Y-%m-%d %H:%M:%S')
 			
-			file_handler = logging.FileHandler(log_file, mode='w')
+			file_handler = logging.FileHandler(self.log_file, mode='w')
 			file_handler.setLevel(logging.INFO)
 			file_handler.setFormatter(format)
 			log.addHandler(file_handler)
@@ -347,41 +379,74 @@ class Qbitban:
 	async def main(self):
 		self.shutdown_event = asyncio.Event()
 		
+		monitor_task = None
+		
 		loop = asyncio.get_running_loop()
 		signals = (signal.SIGTERM, signal.SIGINT, signal.SIGQUIT, signal.SIGHUP)
 		for sig in signals:
-			loop.add_signal_handler(
-				sig, lambda s=sig: asyncio.create_task(self.shutdown(s)))
+			loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(self.shutdown(s)))
 		
-		async with aiohttp.ClientSession() as session:
-			try:
-				self.client.session = session
-				await self.client.connect()
+		try:
+			while not self.shutdown_event.is_set():
+				if not self.client.connected.is_set():
+					try:
+						if await self.client.connect():
+							
+							if self.config.get("clear_banned_ips", False):
+								await self.client.clear_ips()
+							
+							if monitor_task is None or monitor_task.done():
+								monitor_task = asyncio.create_task(self.ban_monitor.torrent_monitor())
+						
+						else:
+							log.warning(f"Connection failed. Retrying in {self.check_interval}s...")
+							await asyncio.sleep(self.check_interval)
+							continue
+					
+					except Exception as e:
+						log.error(f"Shutting down due to error: {str(e)}")
+						self.shutdown_event.set()
+						break
 				
-				if self.config.get("clear_banned_ips", False):
-					await self.client.clear_banned_ips()
+				await asyncio.wait(
+					[
+						asyncio.create_task(self.client.connected.wait()),
+						asyncio.create_task(self.shutdown_event.wait())
+					],
+					return_when=asyncio.FIRST_COMPLETED
+				)
 				
-				self.tasks = [asyncio.create_task(self.ban_monitor.torrent_monitor())]
+				if self.shutdown_event.is_set():
+					break
 				
-				await self.shutdown_event.wait()
-				
-				for task in self.tasks:
-					task.cancel()
-				
-				await asyncio.gather(*self.tasks, return_exceptions=True)
+				if not self.client.connected.is_set() and monitor_task:
+					monitor_task.cancel()
+					try:
+						await monitor_task
+					except asyncio.CancelledError:
+						log.warning("Connection lost. Stopping monitoring until connection is restored...")
+					monitor_task = None
+					
+				await asyncio.sleep(self.check_interval)
+		
+		except Exception as e:
+			log.critical(f"Critical error: {str(e)}", exc_info=True)
+			raise
+		
+		finally:
+			if monitor_task and not monitor_task.done():
+				monitor_task.cancel()
+				try:
+					await monitor_task
+				except (asyncio.CancelledError, Exception):
+					pass
 			
-			except Exception as e:
-				log.critical(f"Critical error: {str(e)}")
-				raise
+			await self.client.close()
+			log.info("Shutdown complete.")
 
 	async def shutdown(self, sig):
 		log.info(f"Received exit signal {sig.name}...")
-		
 		self.shutdown_event.set()
-		if self.client:
-			await self.client.close()
-		
-		log.info("Shutdown complete.")
 
 log = logging.getLogger()
 if __name__ == "__main__":
