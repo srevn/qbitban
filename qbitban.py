@@ -15,12 +15,14 @@ class QBitClient:
 		self.url = url
 		self.auth = {"username": username, "password": password}
 		self.session = None
-		self.logged = False
 		self.auth_cookie = None
+		self.login_failed = False
 		self.connected = asyncio.Event()
 		self.headers = {"Referer": url}
 
 	async def connect(self):
+		self.login_failed = False
+		
 		if self.session:
 			await self.session.close()
 		
@@ -34,25 +36,29 @@ class QBitClient:
 					self.auth_cookie = response.cookies.get("SID").value
 					log.debug(f"Captured SID: {self.auth_cookie}")
 					self.connected.set()
-					self.logged = True
+					self.login_failed = False
 					return True
 				else:
 					if response_text.strip() == "Fails.":
 						log.error("Login failed: Invalid credentials. Initiating shutdown...")
-						self.logged = False
+						self.login_failed = True
 					else:
 						log.error(f"Login failed: HTTP {response.status}")
+						self.login_failed = False
+					
 					self.connected.clear()
 					return False
 		
 		except aiohttp.ClientConnectionError as e:
 			log.debug(f"Connection error: {str(e)}")
 			self.connected.clear()
+			self.login_failed = False
 			return False
 		
 		except Exception as e:
 			log.debug(f"Unexpected error during connect: {str(e)}")
 			self.connected.clear()
+			self.login_failed = False
 			return False
 		
 		self.connected.clear()
@@ -448,14 +454,14 @@ class Qbitban:
 								monitor_task = asyncio.create_task(self.ban_monitor.torrent_monitor())
 						
 						else:
-							if not self.client.logged:
+							if self.client.login_failed:
 								log.error("Shutting down due to invalid credentials.")
 								self.shutdown_event.set()
 								break
-							
-							log.warning(f"Connection failed. Retrying in {self.check_interval}s...")
-							await asyncio.sleep(self.check_interval)
-							continue
+							else:
+								log.warning(f"Connection failed. Retrying in {self.check_interval}s...")
+								await asyncio.sleep(self.check_interval)
+								continue
 					
 					except Exception as e:
 						log.error(f"Shutting down due to error: {str(e)}")
