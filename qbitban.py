@@ -14,8 +14,11 @@ class QBitClient:
 	def __init__(self, url, username, password):
 		self.url = url
 		self.auth = {"username": username, "password": password}
-		self.connected = asyncio.Event()
 		self.session = None
+		self.logged = False
+		self.auth_cookie = None
+		self.connected = asyncio.Event()
+		self.headers = {"Referer": url}
 
 	async def connect(self):
 		if self.session:
@@ -23,21 +26,34 @@ class QBitClient:
 		
 		self.session = aiohttp.ClientSession()
 		try:
-			async with self.session.post(f"{self.url}/api/v2/auth/login", data=self.auth) as response:
-				if response.status == 200:
+			async with self.session.post(f"{self.url}/api/v2/auth/login", data=self.auth, headers=self.headers) as response:
+				response_text = await response.text()
+				
+				if response.status == 200 and response_text == "Ok.":
 					log.info("Connected to qBittorrent successfully.")
+					self.auth_cookie = response.cookies.get("SID").value
+					log.debug(f"Captured SID: {self.auth_cookie}")
 					self.connected.set()
+					self.logged = True
 					return True
 				else:
-					log.error("Login failed: Invalid credentials.")
+					if response_text.strip() == "Fails.":
+						log.error("Login failed: Invalid credentials. Initiating shutdown...")
+						self.logged = False
+					else:
+						log.error(f"Login failed: HTTP {response.status}")
 					self.connected.clear()
-					raise Exception
+					return False
 		
 		except aiohttp.ClientConnectionError as e:
 			log.debug(f"Connection error: {str(e)}")
+			self.connected.clear()
+			return False
 		
 		except Exception as e:
 			log.debug(f"Unexpected error during connect: {str(e)}")
+			self.connected.clear()
+			return False
 		
 		self.connected.clear()
 		return False
@@ -46,11 +62,13 @@ class QBitClient:
 		if not self.connected.is_set():
 			raise aiohttp.ClientConnectionError("Not connected to qBittorrent.")
 		
+		headers = {**self.headers, "Cookie": f"SID={self.auth_cookie}"}
+		
 		try:
-			async with self.session.get(f"{self.url}/{endpoint}", params=params) as response:
+			async with self.session.get(f"{self.url}/{endpoint}", params=params, headers=headers) as response:
 				response.raise_for_status()
 				content_type = response.headers.get("Content-Type", "")
-		
+				
 				if "application/json" in content_type:
 					return await response.json()
 				elif "text/plain" in content_type:
@@ -62,21 +80,45 @@ class QBitClient:
 			log.debug(f"Connection error in fetch: {str(e)}")
 			self.connected.clear()
 			raise
+		
 		except Exception as e:
 			log.debug(f"Error in fetch: {str(e)}")
 			self.connected.clear()
-			raise
-
+			raise	
+	
 	async def clear_ips(self):
+		headers = {**self.headers, "Cookie": f"SID={self.auth_cookie}"}
 		data = {"json": json.dumps({"banned_IPs": ""})}
+		
 		try:
-			async with self.session.post(f"{self.url}/api/v2/app/setPreferences", data=data) as response:
+			async with self.session.post(f"{self.url}/api/v2/app/setPreferences", data=data, headers=headers) as response:
 				response.raise_for_status()
 				log.info("Successfully cleared previously banned IPs.")
 				return True
 		
 		except Exception as e:
 			log.debug(f"Failed to clear banned IPs list: {str(e)}")
+			return False
+
+	async def logout(self):
+		if not self.session or not self.connected.is_set():
+			return False
+		
+		headers = {**self.headers, "Cookie": f"SID={self.auth_cookie}"}
+		
+		try:
+			async with self.session.post(f"{self.url}/api/v2/auth/logout", headers=headers) as response:
+				if response.status == 200:
+					log.info("Logged out successfully.")
+					self.connected.clear()
+					self.auth_cookie = None
+					return True
+				else:
+					log.error(f"Logout failed: HTTP {response.status}")
+					return False
+		
+		except Exception as e:
+			log.error(f"Logout encountered error: {str(e)}")
 			return False
 
 	async def close(self):
@@ -278,10 +320,17 @@ class BanMonitor:
 		finally:
 			if torrent_hash in self.active_monitors:
 				del self.active_monitors[torrent_hash]
-
+				
 	async def ban_peer(self, ip, port):
 		try:
-			async with self.client.session.post(f"{self.client.url}/api/v2/transfer/banPeers", data={"peers": f"{ip}:{port}"}) as response:
+			headers = {
+				**self.client.headers,
+				"Cookie": f"SID={self.client.auth_cookie}",
+				"Content-Type": "application/x-www-form-urlencoded"
+			}
+			data = {"peers": f"{ip}:{port}"}
+			
+			async with self.client.session.post(f"{self.client.url}/api/v2/transfer/banPeers", data=data, headers=headers) as response:
 				return response.status == 200
 		
 		except Exception as e:
@@ -399,6 +448,11 @@ class Qbitban:
 								monitor_task = asyncio.create_task(self.ban_monitor.torrent_monitor())
 						
 						else:
+							if not self.client.logged:
+								log.error("Shutting down due to invalid credentials.")
+								self.shutdown_event.set()
+								break
+							
 							log.warning(f"Connection failed. Retrying in {self.check_interval}s...")
 							await asyncio.sleep(self.check_interval)
 							continue
@@ -440,7 +494,8 @@ class Qbitban:
 					await monitor_task
 				except (asyncio.CancelledError, Exception):
 					pass
-			
+				
+			await self.client.logout()
 			await self.client.close()
 			log.info("Shutdown complete.")
 
