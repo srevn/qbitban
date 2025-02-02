@@ -37,14 +37,14 @@ qbitban_precmd()
 	fi
 }
 
-qbitban_start() {
-	echo "Starting ${name}..."
+qbitban_start()
+{
 	su -m ${qbitban_user} -c "${command} ${command_args} & echo \$! > ${pidfile}"
 	echo "${name} started."
 }
 
-qbitban_stop() {
-	echo "Stopping ${name}..."
+qbitban_stop()
+{
 	if [ -f ${pidfile} ]; then
 		kill -TERM $(cat ${pidfile}) && rm -f ${pidfile}
 		echo "${name} stopped."
