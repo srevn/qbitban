@@ -139,7 +139,7 @@ class PeerTracker:
 		self.client = client
 		self.upspeed_samples = upspeed_samples
 		self.upspeed_interval = upspeed_interval
-		self.tracked_peers = TTLCache(maxsize=100, ttl=reset_interval)
+		self.tracked_peers = TTLCache(maxsize=1000, ttl=reset_interval)
 
 	def speed_analyzer(self, speeds, ema_weight=0.8, alpha=0.3):
 		if not speeds:
@@ -234,7 +234,7 @@ class BanMonitor:
 		self.min_seeders = min_seeders
 		self.check_interval = check_interval
 		self.upspeed_threshold = upspeed_threshold
-		self.tracked_torrents = TTLCache(maxsize=100, ttl=reset_interval)
+		self.tracked_torrents = TTLCache(maxsize=1000, ttl=reset_interval)
 		self.active_monitors = {}
 
 	async def speed_limit(self):
@@ -326,7 +326,7 @@ class BanMonitor:
 		finally:
 			if torrent_hash in self.active_monitors:
 				del self.active_monitors[torrent_hash]
-				
+
 	async def ban_peer(self, ip, port):
 		try:
 			headers = {
@@ -365,7 +365,7 @@ class BanMonitor:
 						self.active_monitors[torrent_hash] = task
 					
 				await asyncio.sleep(self.check_interval)
-		
+			
 			except aiohttp.ClientConnectionError as e:
 				log.debug(f"Connection error during monitoring: {str(e)}")
 				self.client.connected.clear()
@@ -468,7 +468,7 @@ class Qbitban:
 						self.shutdown_event.set()
 						break
 				
-				await asyncio.wait(
+				done, pending = await asyncio.wait(
 					[
 						asyncio.create_task(self.client.connected.wait()),
 						asyncio.create_task(self.shutdown_event.wait())
@@ -483,8 +483,9 @@ class Qbitban:
 					monitor_task.cancel()
 					try:
 						await monitor_task
+					
 					except asyncio.CancelledError:
-						log.warning("Connection lost. Stopping monitoring until connection is restored...")
+						log.warning("Monitoring task cancelled due to connection loss.")
 					monitor_task = None
 					
 				await asyncio.sleep(self.check_interval)
