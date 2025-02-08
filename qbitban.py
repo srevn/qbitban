@@ -463,7 +463,7 @@ class Qbitban:
 			while not self.shutdown_event.is_set():
 				if not self.client.connected.is_set():
 					try:
-						if await asyncio.wait_for(self.client.connect(), timeout=30):
+						if await asyncio.wait_for(self.client.connect(), timeout=self.check_interval):
 							
 							if self.clear_ips:
 								await self.client.clear_ips()
@@ -480,12 +480,17 @@ class Qbitban:
 								break
 							else:
 								log.warning(f"No connection. Retrying in {self.check_interval}s...")
-								await asyncio.sleep(self.check_interval)
-								continue
+								try:
+									await asyncio.wait_for(self.shutdown_event.wait(), timeout=self.check_interval)
+								except asyncio.TimeoutError:
+									continue
 					
 					except asyncio.TimeoutError:
 						log.warning("Connection attempt timed out.")
-						await asyncio.sleep(self.check_interval)
+						try:
+							await asyncio.wait_for(self.shutdown_event.wait(), timeout=self.check_interval)
+						except asyncio.TimeoutError:
+							pass
 						continue
 					
 					except Exception as e:
