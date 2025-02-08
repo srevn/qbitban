@@ -4,6 +4,7 @@ import json
 import logging
 import signal
 import sys
+import time
 from collections import defaultdict, deque
 
 import aiohttp
@@ -273,40 +274,41 @@ class BanMonitor:
 			return False
 
 	async def uploading_torrents(self):
-		torrents = await self.client.fetch("api/v2/torrents/info", {"filter": "active"})
-		
 		try:
-			for torrent in torrents:
-				if not (torrent["state"] in {"uploading"} and torrent["upspeed"] > 0):
-					continue
-				
-				torrent_hash = torrent["hash"]
-				
-				if torrent["num_complete"] >= self.min_seeders:
-					self.tracked_torrents.pop(torrent_hash, None)
-					yield torrent_hash
-				
-				elif torrent_hash not in self.tracked_torrents:
-					log.info(f"Adding exception for {torrent_hash} with {torrent['num_complete']} "
-							f"{'seeder' if torrent['num_complete'] == 1 else 'seeders'}.")
-					self.tracked_torrents[torrent_hash] = True
-					
-					try:
-						peers_data = await self.client.fetch("api/v2/sync/torrentPeers", {"hash": torrent_hash})
-						peers = peers_data.get("peers", {})
-						
-						for peer_id, peer_info in peers.items():
-							ip = peer_info.get("ip")
-							port = peer_info.get("port", 6881)
-							if ip and port:
-								log.debug(f"Adding wider exception for {torrent_hash} with {ip}:{port}.")
-								self.peer_tracker.tracked_peers[(ip, port)] = True
-					
-					except Exception as e:
-						log.debug(f"Error fetching peers for wider exception: {str(e)}")
-		
+			torrents = await self.client.fetch("api/v2/torrents/info", {"filter": "active"})
+			
 		except Exception as e:
-			log.debug(f"Unexpected error processing torrent: {str(e)}")
+			log.debug(f"Failed to get torrents list: {str(e)}")
+			return
+		
+		for torrent in torrents:
+			if not (torrent["state"] in {"uploading"} and torrent["upspeed"] > 0):
+				continue
+			
+			torrent_hash = torrent["hash"]
+			
+			if torrent["num_complete"] >= self.min_seeders:
+				self.tracked_torrents.pop(torrent_hash, None)
+				yield torrent_hash
+			
+			elif torrent_hash not in self.tracked_torrents:
+				log.info(f"Adding exception for {torrent_hash} with {torrent['num_complete']} "
+						f"{'seeder' if torrent['num_complete'] == 1 else 'seeders'}.")
+				self.tracked_torrents[torrent_hash] = True
+				
+				try:
+					peers_data = await self.client.fetch("api/v2/sync/torrentPeers", {"hash": torrent_hash})
+					peers = peers_data.get("peers", {})
+					
+					for peer_id, peer_info in peers.items():
+						ip = peer_info.get("ip")
+						port = peer_info.get("port", 6881)
+						if ip and port:
+							log.debug(f"Adding wider exception for {torrent_hash} with {ip}:{port}.")
+							self.peer_tracker.tracked_peers[(ip, port)] = True
+				
+				except Exception as e:
+					log.debug(f"Error fetching peers for wider exception: {str(e)}")
 
 	async def peer_monitor(self, torrent_hash):
 		try:
@@ -346,6 +348,10 @@ class BanMonitor:
 	async def torrent_monitor(self):
 		while True:
 			try:
+				if not self.client.connected.is_set():
+					await asyncio.sleep(self.check_interval)
+					continue
+				
 				if asyncio.current_task().cancelled():
 					break
 				
@@ -367,9 +373,8 @@ class BanMonitor:
 				await asyncio.sleep(self.check_interval)
 			
 			except aiohttp.ClientConnectionError as e:
-				log.debug(f"Connection error during monitoring: {str(e)}")
+				log.debug(f"Connection error during monitoring: {str(e)}. Reconnecting...")
 				self.client.connected.clear()
-				await asyncio.sleep(self.check_interval)
 			
 			except asyncio.CancelledError:
 				raise
@@ -383,7 +388,10 @@ class Qbitban:
 			self.config = json.load(config_file)
 		
 		self.log_file = self.config["log_file"]
+		self.clear_ips = self.config["clear_ips"]
+		self.clear_interval = self.config["clear_interval"]
 		self.check_interval = self.config["check_interval"]
+		self.last_clearup = 0
 		
 		self.logger()
 		
@@ -431,10 +439,20 @@ class Qbitban:
 			print(f"Misconfiguration in logging setup: {str(e)}", file=sys.stderr)
 			raise
 
+	async def clearup(self):
+		while True:
+			if (time.time() - self.last_clearup) >= self.clear_interval:
+				if self.client.connected.is_set():
+					await self.client.clear_ips()
+					self.last_clearup = time.time()
+			
+			await asyncio.sleep(self.check_interval)
+
 	async def main(self):
 		self.shutdown_event = asyncio.Event()
 		
 		monitor_task = None
+		clearup_task = None
 		
 		loop = asyncio.get_running_loop()
 		signals = (signal.SIGTERM, signal.SIGINT, signal.SIGQUIT, signal.SIGHUP)
@@ -445,13 +463,15 @@ class Qbitban:
 			while not self.shutdown_event.is_set():
 				if not self.client.connected.is_set():
 					try:
-						if await self.client.connect():
+						if await asyncio.wait_for(self.client.connect(), timeout=30):
 							
-							if self.config.get("clear_banned_ips", False):
+							if self.clear_ips:
 								await self.client.clear_ips()
+								self.last_clearup = time.time()
+								if self.clear_interval > 0:
+									clearup_task = asyncio.create_task(self.clearup())
 							
-							if monitor_task is None or monitor_task.done():
-								monitor_task = asyncio.create_task(self.ban_monitor.torrent_monitor())
+							monitor_task = asyncio.create_task(self.ban_monitor.torrent_monitor())
 						
 						else:
 							if self.client.login_failed:
@@ -459,51 +479,59 @@ class Qbitban:
 								self.shutdown_event.set()
 								break
 							else:
-								log.warning(f"Connection failed. Retrying in {self.check_interval}s...")
+								log.warning(f"No connection. Retrying in {self.check_interval}s...")
 								await asyncio.sleep(self.check_interval)
 								continue
+					
+					except asyncio.TimeoutError:
+						log.warning("Connection attempt timed out.")
+						await asyncio.sleep(self.check_interval)
+						continue
 					
 					except Exception as e:
 						log.error(f"Shutting down due to error: {str(e)}")
 						self.shutdown_event.set()
 						break
 				
-				done, pending = await asyncio.wait(
-					[
-						asyncio.create_task(self.client.connected.wait()),
-						asyncio.create_task(self.shutdown_event.wait())
-					],
-					return_when=asyncio.FIRST_COMPLETED
-				)
+				try:
+					await asyncio.wait_for(self.shutdown_event.wait(), timeout=self.check_interval)
 				
-				if self.shutdown_event.is_set():
-					break
-				
-				if not self.client.connected.is_set() and monitor_task:
-					monitor_task.cancel()
-					try:
-						await monitor_task
-					
-					except asyncio.CancelledError:
-						log.warning("Monitoring task cancelled due to connection loss.")
-					monitor_task = None
-					
-				await asyncio.sleep(self.check_interval)
+				except asyncio.TimeoutError:
+					if not self.client.connected.is_set():
+						log.warning("Connection lost. Cancelling tasks...")
+						
+						if monitor_task:
+							monitor_task.cancel()
+							try:
+								await monitor_task
+							
+							except asyncio.CancelledError:
+								log.debug("Monitoring task cancelled...")
+							
+							monitor_task = None
 		
 		except Exception as e:
 			log.critical(f"Critical error: {str(e)}", exc_info=True)
 			raise
 		
 		finally:
-			if monitor_task and not monitor_task.done():
+			if monitor_task:
 				monitor_task.cancel()
 				try:
 					await monitor_task
 				except (asyncio.CancelledError, Exception):
 					pass
 				
+			if clearup_task:
+				clearup_task.cancel()
+				try:
+					await clearup_task
+				except (asyncio.CancelledError, Exception):
+					pass
+				
 			await self.client.logout()
 			await self.client.close()
+			
 			log.info("Shutdown complete.")
 
 	async def shutdown(self, sig):
@@ -513,7 +541,7 @@ class Qbitban:
 log = logging.getLogger()
 if __name__ == "__main__":
 	try:
-		parser = argparse.ArgumentParser(description="qbitban configuration")
+		parser = argparse.ArgumentParser(description="qBitban configuration")
 		parser.add_argument("--config", type=str, required=True)
 		args = parser.parse_args()
 		
