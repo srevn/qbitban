@@ -352,9 +352,6 @@ class BanMonitor:
 					await asyncio.sleep(self.check_interval)
 					continue
 				
-				if asyncio.current_task().cancelled():
-					break
-				
 				if not await self.speed_limit():
 					async for torrent_hash in self.uploading_torrents():
 						
