@@ -236,7 +236,12 @@ class BanMonitor:
 		self.check_interval = check_interval
 		self.upspeed_threshold = upspeed_threshold
 		self.tracked_torrents = TTLCache(maxsize=1000, ttl=reset_interval)
+		
 		self.active_monitors = {}
+		self.batch_size = 5
+		self.max_batches = 3
+		self.processing_queue = asyncio.Queue()
+		self.active_batches = set()
 
 	async def speed_limit(self):
 		try:
@@ -345,6 +350,20 @@ class BanMonitor:
 			log.debug(f"An error occurred while sending peer data: {str(e)}")
 			return False
 
+	async def process_torrent(self, batch):
+		tasks = []
+		for torrent_hash in batch:
+			if torrent_hash not in self.active_monitors:
+				task = asyncio.create_task(self.peer_monitor(torrent_hash))
+				tasks.append(task)
+				self.active_monitors[torrent_hash] = task
+		
+		await asyncio.gather(*tasks, return_exceptions=True)
+		
+		for torrent_hash in batch:
+			if torrent_hash in self.active_monitors:
+				del self.active_monitors[torrent_hash]
+
 	async def torrent_monitor(self):
 		while True:
 			try:
@@ -353,31 +372,39 @@ class BanMonitor:
 					continue
 				
 				if not await self.speed_limit():
-					async for torrent_hash in self.uploading_torrents():
-						
-						if torrent_hash in self.active_monitors:
-							if not self.active_monitors[torrent_hash].done():
-								log.debug(f"Monitoring {torrent_hash} in progress")
-								continue
-							
-							log.debug(f"Monitoring completed for {torrent_hash}")
-							del self.active_monitors[torrent_hash]
-						
-						log.debug(f"Starting new monitoring task for {torrent_hash}")
-						task = asyncio.create_task(self.peer_monitor(torrent_hash))
-						self.active_monitors[torrent_hash] = task
+					current_batch = []
 					
+					async for torrent_hash in self.uploading_torrents():
+						if torrent_hash in self.active_monitors:
+							continue
+						
+						current_batch.append(torrent_hash)
+						
+						if len(current_batch) >= self.batch_size:
+							batch_id = id(current_batch)
+							self.active_batches.add(batch_id)
+							asyncio.create_task(self.process_torrent(current_batch))
+							current_batch = []
+							
+							while len(self.active_batches) >= self.max_batches:
+								await asyncio.sleep(self.check_interval)
+					
+					if current_batch:
+						batch_id = id(current_batch)
+						self.active_batches.add(batch_id)
+						asyncio.create_task(self.process_torrent(current_batch))
+				
 				await asyncio.sleep(self.check_interval)
 			
 			except aiohttp.ClientConnectionError as e:
-				log.debug(f"Connection error during monitoring: {str(e)}. Reconnecting...")
+				log.debug(f"Connection error during monitoring: {str(e)}")
 				self.client.connected.clear()
 			
 			except asyncio.CancelledError:
 				raise
 			
 			except Exception as e:
-				log.debug(f"An error occurred during torrent monitoring: {str(e)}")
+				log.debug(f"Error during torrent monitoring: {str(e)}")
 
 class Qbitban:
 	def __init__(self, config_path):
@@ -537,7 +564,7 @@ class Qbitban:
 			log.info("Shutdown complete.")
 
 	async def shutdown(self, sig):
-		log.info(f"Received exit signal {sig.name}...")
+		log.debug(f"Received exit signal {sig.name}...")
 		self.shutdown_event.set()
 
 log = logging.getLogger()
