@@ -8,6 +8,7 @@
     "min_seeders": 3,
     "check_interval": 5,
     "reset_interval": 3600,
+    "excluded_tags": ["tag1", "tag2"],
     "clear_ips": false,
     "clear_interval": 86400,
     "log_file_path": "/var/log/qbitban.log"

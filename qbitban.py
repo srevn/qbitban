@@ -229,10 +229,11 @@ class PeerTracker:
 			return {}
 
 class BanMonitor:
-	def __init__(self, client, peer_tracker, min_seeders, reset_interval, check_interval, upspeed_threshold):
+	def __init__(self, client, peer_tracker, min_seeders, excluded_tags, reset_interval, check_interval, upspeed_threshold):
 		self.client = client
 		self.peer_tracker = peer_tracker
 		self.min_seeders = min_seeders
+		self.excluded_tags = excluded_tags
 		self.check_interval = check_interval
 		self.upspeed_threshold = upspeed_threshold
 		self.tracked_torrents = TTLCache(maxsize=1000, ttl=reset_interval)
@@ -291,6 +292,12 @@ class BanMonitor:
 				continue
 			
 			torrent_hash = torrent["hash"]
+			torrent_tags = torrent.get("tags", "")
+			
+			if torrent_tags:
+				tags_list = [tag.strip() for tag in torrent_tags.split(',')]
+				if any(tag in self.excluded_tags for tag in tags_list):
+					continue
 			
 			if torrent["num_complete"] >= self.min_seeders:
 				self.tracked_torrents.pop(torrent_hash, None)
@@ -440,6 +447,7 @@ class Qbitban:
 			client = self.client,
 			peer_tracker = self.peer_tracker,
 			min_seeders = self.config["min_seeders"],
+			excluded_tags = self.config.get("excluded_tags", []),
 			reset_interval = self.config["reset_interval"],
 			check_interval = self.config["check_interval"],
 			upspeed_threshold = self.config["upspeed_threshold"]
