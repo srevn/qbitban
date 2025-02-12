@@ -288,11 +288,11 @@ class BanMonitor:
 			return
 		
 		for torrent in torrents:
-			if not (torrent["state"] in {"uploading"} and torrent["upspeed"] > 0):
+			if not (torrent["state"] in {"uploading"} and torrent["upspeed"] > 1):
 				continue
 			
 			torrent_hash = torrent["hash"]
-			torrent_tags = torrent.get("tags", "")
+			torrent_tags = torrent["tags"]
 			
 			if torrent_tags:
 				tags_list = [tag.strip() for tag in torrent_tags.split(',')]
@@ -447,7 +447,7 @@ class Qbitban:
 			client = self.client,
 			peer_tracker = self.peer_tracker,
 			min_seeders = self.config["min_seeders"],
-			excluded_tags = self.config.get("excluded_tags", []),
+			excluded_tags = self.config["excluded_tags"],
 			reset_interval = self.config["reset_interval"],
 			check_interval = self.config["check_interval"],
 			upspeed_threshold = self.config["upspeed_threshold"]
