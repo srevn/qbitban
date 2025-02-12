@@ -125,7 +125,7 @@ class QBitClient:
 					return False
 		
 		except Exception as e:
-			log.error(f"Logout encountered error: {str(e)}")
+			log.debug(f"Logout encountered error: {str(e)}")
 			return False
 
 	async def close(self):
@@ -324,7 +324,7 @@ class BanMonitor:
 					if await self.ban_peer(ip, port):
 						log.info(f"Banned peer {ip}:{port} with average upload speed {avg_speed / 1024:.2f} KB/s.")
 					else:
-						log.debug(f"Failed to ban peer {ip}:{port}")
+						log.error(f"Failed to ban peer {ip}:{port}")
 				
 				elif avg_speed >= self.upspeed_threshold:
 					log.info(f"Adding exception for {ip}:{port} with average speed {avg_speed / 1024:.2f} KB/s.")
@@ -361,7 +361,7 @@ class BanMonitor:
 		await asyncio.gather(*tasks, return_exceptions=True)
 		
 		for torrent_hash in batch:
-			if torrent_hash in self.active_monitors:
+			if self.active_monitors.get(torrent_hash) in tasks:
 				del self.active_monitors[torrent_hash]
 
 	async def torrent_monitor(self):
@@ -383,7 +383,8 @@ class BanMonitor:
 						if len(current_batch) >= self.batch_size:
 							batch_id = id(current_batch)
 							self.active_batches.add(batch_id)
-							asyncio.create_task(self.process_torrent(current_batch))
+							task = asyncio.create_task(self.process_torrent(current_batch))
+							task.add_done_callback(lambda _: self.active_batches.discard(batch_id))
 							current_batch = []
 							
 							while len(self.active_batches) >= self.max_batches:
@@ -392,7 +393,8 @@ class BanMonitor:
 					if current_batch:
 						batch_id = id(current_batch)
 						self.active_batches.add(batch_id)
-						asyncio.create_task(self.process_torrent(current_batch))
+						task = asyncio.create_task(self.process_torrent(current_batch))
+						task.add_done_callback(lambda _: self.active_batches.discard(batch_id))
 				
 				await asyncio.sleep(self.check_interval)
 			
@@ -416,6 +418,8 @@ class Qbitban:
 		self.clear_interval = self.config["clear_interval"]
 		self.check_interval = self.config["check_interval"]
 		self.last_clearup = 0
+		
+		self.waiting_connection_log = False
 		
 		self.logger()
 		
@@ -485,9 +489,16 @@ class Qbitban:
 		
 		try:
 			while not self.shutdown_event.is_set():
+				
+				if not self.client.connected.is_set() and not self.waiting_connection_log:
+					log.info("Waiting for connection...")
+					self.waiting_connection_log = True
+				
 				if not self.client.connected.is_set():
 					try:
 						if await asyncio.wait_for(self.client.connect(), timeout=self.check_interval):
+							
+							self.waiting_connection_log = False
 							
 							if self.clear_ips:
 								await self.client.clear_ips()
@@ -503,19 +514,12 @@ class Qbitban:
 								self.shutdown_event.set()
 								break
 							else:
-								log.warning(f"No connection. Retrying in {self.check_interval}s...")
-								try:
-									await asyncio.wait_for(self.shutdown_event.wait(), timeout=self.check_interval)
-								except asyncio.TimeoutError:
-									continue
+								log.debug(f"No connection. Retrying in {self.check_interval}s...")
+								await asyncio.sleep(self.check_interval)
 					
 					except asyncio.TimeoutError:
-						log.warning("Connection attempt timed out.")
-						try:
-							await asyncio.wait_for(self.shutdown_event.wait(), timeout=self.check_interval)
-						except asyncio.TimeoutError:
-							pass
-						continue
+						log.warning("Connection attempt timed out. Retrying...")
+						await asyncio.sleep(self.check_interval)
 					
 					except Exception as e:
 						log.error(f"Shutting down due to error: {str(e)}")
@@ -527,7 +531,8 @@ class Qbitban:
 				
 				except asyncio.TimeoutError:
 					if not self.client.connected.is_set():
-						log.warning("Connection lost. Cancelling tasks...")
+						log.error("Connection lost. Cancelling tasks...")
+						self.waiting_connection_log = False
 						
 						if monitor_task:
 							monitor_task.cancel()
@@ -544,19 +549,14 @@ class Qbitban:
 			raise
 		
 		finally:
-			if monitor_task:
-				monitor_task.cancel()
-				try:
-					await monitor_task
-				except (asyncio.CancelledError, Exception):
-					pass
-				
-			if clearup_task:
-				clearup_task.cancel()
-				try:
-					await clearup_task
-				except (asyncio.CancelledError, Exception):
-					pass
+			for task in [monitor_task, clearup_task]:
+				if task:
+					task.cancel()
+					try:
+						await task
+					
+					except asyncio.CancelledError:
+						pass
 				
 			await self.client.logout()
 			await self.client.close()
