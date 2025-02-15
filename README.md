@@ -1,6 +1,6 @@
 # qbitban
 
-qbitban is a Python-based service that monitors torrents in a [qBittorrent](https://github.com/qbittorrent/qBittorrent) instance. It connects to the qBittorrent API, monitors active torrents, tracks peer upload speeds, and automatically bans peers whose speeds fall below a specified threshold. It also handles exceptions for torrents that don't have enough seeders or have specific tags.
+qbitban is a Python-based command-line tool aimed at optimizing [qBittorrent](https://github.com/qbittorrent/qBittorrent) upload performance. It connects to the qBittorrent API, monitors active torrents, tracks peer upload speeds, and automatically bans peers whose speeds fall below a specified threshold. This helps keeping uploads slots free while improving speed and data transfers. It also handles exceptions for torrents that don't have enough seeders or have specific tags.
 
 ## Project Structure
 
@@ -20,7 +20,7 @@ qbitban is a Python-based service that monitors torrents in a [qBittorrent](http
 
 ## Installation
 
-Note: By default, it's made to work on FreeBSD. It can be adapted to work on other systems as well if needed.
+Note: By default, it's made to work on FreeBSD. It can be adapted to work on other systems as well, if needed.
 
 Run the provided installation script to set up the environment and build the application. For example, open your terminal and execute:
 
@@ -34,6 +34,7 @@ The script will:
 - Install required Python packages.
 - Build the application using PyInstaller.
 - Copy the necessary executables and configuration files to the appropriate system locations.
+- Clean up after completion.
 
 ## Configuration
 
@@ -59,7 +60,9 @@ Update the configuration file `qbitban.json` with your settings. The configurati
 
 You can run the application by specifying the configuration file. For example:
 
+```sh
 python qbitban.py --config /path/to/qbitban.json
+```
 
 ### Running as executable on FreeBSD
 
