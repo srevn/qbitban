@@ -1,6 +1,6 @@
 # qbitban
 
-qbitban is a Python-based service that monitors torrents in a [qBittorrent](https://github.com/qbittorrent/qBittorrent) instance. It connects to the qBittorrent API, monitors active torrents, tracks peer upload speeds, and automatically bans peers whose speeds fall below a specified threshold. It also handles exceptions for torrents that don't have enough seeders or are have specific tags.
+qbitban is a Python-based service that monitors torrents in a [qBittorrent](https://github.com/qbittorrent/qBittorrent) instance. It connects to the qBittorrent API, monitors active torrents, tracks peer upload speeds, and automatically bans peers whose speeds fall below a specified threshold. It also handles exceptions for torrents that don't have enough seeders or have specific tags.
 
 ## Project Structure
 
@@ -48,7 +48,7 @@ Update the configuration file `qbitban.json` with your settings. The configurati
 - `min_seeders`: Minimum number of seeders to bypass monitoring.
 - `excluded_tags`: Tags to bypass monitoring. (`""` for none)
 - `check_interval`: Interval (in seconds) for fetching new active torrents data.
-- `reset_interval`: Duration after which tracked data resets (excluded peers and torrents).
+- `reset_interval`: Duration after which cached tracking data resets (excluded peers and torrents).
 - `clear_banned_ips`: Boolean to indicate if banned IPs should be cleared. (at starup and periodic)
 - `clear_interval`: Interval (in seconds) for periodic purge of banned IPs from qBittorrent. (`0` to disable)
 - `log_file_path`: Path for the log file (used in the `Qbitban.logger` function).
@@ -63,7 +63,7 @@ python qbitban.py --config /path/to/qbitban.json
 
 ### Running as executable on FreeBSD
 
-The installer will add a rc.d script for managing with FreeBSD. Check the script for possible configurable options.
+The installer will add a rc.d script for managing with FreeBSD. Check the script for possible options.
 
 You can run with `service qbitban start` if properly configured.
 
@@ -72,9 +72,3 @@ You can run with `service qbitban start` if properly configured.
 Logs are written to the file specified in `log_file_path` in your configuration as well as output to the console if ran from the command line.
 
 Note: By default, only relevent information gets written in the log file (`INFO` level), while console stream will output everything. (`DEBUG` level)
-
-## Uninstallation
-
-To uninstall:
-- Remove the installed binaries from `/usr/local/bin/`.
-- Remove the configuration and service scripts (e.g., `qbitban.json` and `qbitban`).
