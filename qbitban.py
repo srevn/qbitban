@@ -237,12 +237,7 @@ class BanMonitor:
 		self.check_interval = check_interval
 		self.upspeed_threshold = upspeed_threshold
 		self.tracked_torrents = TTLCache(maxsize=1000, ttl=reset_interval)
-		
 		self.active_monitors = {}
-		self.batch_size = 5
-		self.max_batches = 3
-		self.processing_queue = asyncio.Queue()
-		self.active_batches = set()
 
 	async def speed_limit(self):
 		try:
@@ -296,7 +291,10 @@ class BanMonitor:
 			
 			if torrent_tags:
 				tags_list = [tag.strip() for tag in torrent_tags.split(',')]
-				if any(tag in self.excluded_tags for tag in tags_list):
+				excluded = [tag for tag in tags_list if tag in self.excluded_tags]
+				
+				if excluded:
+					log.info(f"Excluding torrent {torrent_hash} with tags: {', '.join(excluded)}")
 					continue
 			
 			if torrent["num_complete"] >= self.min_seeders:
@@ -357,20 +355,6 @@ class BanMonitor:
 			log.debug(f"An error occurred while sending peer data: {str(e)}")
 			return False
 
-	async def process_torrent(self, batch):
-		tasks = []
-		for torrent_hash in batch:
-			if torrent_hash not in self.active_monitors:
-				task = asyncio.create_task(self.peer_monitor(torrent_hash))
-				tasks.append(task)
-				self.active_monitors[torrent_hash] = task
-		
-		await asyncio.gather(*tasks, return_exceptions=True)
-		
-		for torrent_hash in batch:
-			if self.active_monitors.get(torrent_hash) in tasks:
-				del self.active_monitors[torrent_hash]
-
 	async def torrent_monitor(self):
 		while True:
 			try:
@@ -379,30 +363,20 @@ class BanMonitor:
 					continue
 				
 				if not await self.speed_limit():
-					current_batch = []
-					
 					async for torrent_hash in self.uploading_torrents():
+						
 						if torrent_hash in self.active_monitors:
-							continue
-						
-						current_batch.append(torrent_hash)
-						
-						if len(current_batch) >= self.batch_size:
-							batch_id = id(current_batch)
-							self.active_batches.add(batch_id)
-							task = asyncio.create_task(self.process_torrent(current_batch))
-							task.add_done_callback(lambda _: self.active_batches.discard(batch_id))
-							current_batch = []
+							if not self.active_monitors[torrent_hash].done():
+								log.debug(f"Monitoring {torrent_hash} in progress")
+								continue
 							
-							while len(self.active_batches) >= self.max_batches:
-								await asyncio.sleep(self.check_interval)
+							log.debug(f"Monitoring completed for {torrent_hash}")
+							del self.active_monitors[torrent_hash]
+						
+						log.debug(f"Starting new monitoring task for {torrent_hash}")
+						task = asyncio.create_task(self.peer_monitor(torrent_hash))
+						self.active_monitors[torrent_hash] = task
 					
-					if current_batch:
-						batch_id = id(current_batch)
-						self.active_batches.add(batch_id)
-						task = asyncio.create_task(self.process_torrent(current_batch))
-						task.add_done_callback(lambda _: self.active_batches.discard(batch_id))
-				
 				await asyncio.sleep(self.check_interval)
 			
 			except aiohttp.ClientConnectionError as e:
