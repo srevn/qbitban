@@ -289,16 +289,19 @@ class BanMonitor:
 			torrent_hash = torrent["hash"]
 			torrent_tags = torrent["tags"]
 			
+			if torrent_hash in self.tracked_torrents:
+				continue
+			
 			if torrent_tags:
 				tags_list = [tag.strip() for tag in torrent_tags.split(',')]
 				excluded = [tag for tag in tags_list if tag in self.excluded_tags]
 				
 				if excluded:
 					log.info(f"Excluding torrent {torrent_hash} with tags: {', '.join(excluded)}")
+					self.tracked_torrents[torrent_hash] = True
 					continue
 			
 			if torrent["num_complete"] >= self.min_seeders:
-				self.tracked_torrents.pop(torrent_hash, None)
 				yield torrent_hash
 			
 			elif torrent_hash not in self.tracked_torrents:
@@ -513,7 +516,7 @@ class Qbitban:
 				
 				except asyncio.TimeoutError:
 					if not self.client.connected.is_set():
-						log.error("Connection lost. Cancelling tasks...")
+						log.error("Connection lost...")
 						self.waiting_connection_log = False
 						
 						if monitor_task:
