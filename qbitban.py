@@ -493,14 +493,15 @@ class Qbitban:
 							
 							monitor_task = asyncio.create_task(self.ban_monitor.torrent_monitor())
 						
-						elif self.client.login_failed:
+						else:
+							if self.client.login_failed:
 								log.error("Shutting down due to invalid credentials.")
 								self.shutdown_event.set()
 								break
-						else:
-							log.debug(f"No connection. Retrying in {self.check_interval}s...")
-							await asyncio.sleep(self.check_interval)
-							continue
+							else:
+								log.debug(f"No connection. Retrying in {self.check_interval}s...")
+								await asyncio.sleep(self.check_interval)
+								continue
 					
 					except asyncio.TimeoutError:
 						log.warning("Connection attempt timed out. Retrying...")
