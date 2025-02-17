@@ -47,12 +47,12 @@ Update the configuration file `qbitban.json` with your settings. The configurati
 - `upspeed_samples`: Number of samples for speed analysis.
 - `upspeed_interval`: Time interval (in seconds) between speed samples.
 - `min_seeders`: Minimum number of seeders to bypass monitoring.
-- `excluded_tags`: Tags to bypass monitoring. (`""` for none)
+- `excluded_tags`: Tags to bypass monitoring. (`[""]` for none)
 - `check_interval`: Interval (in seconds) for fetching new active torrents data.
 - `reset_interval`: Duration after which cached tracking data resets (excluded peers and torrents).
 - `clear_banned_ips`: Boolean to indicate if banned IPs should be cleared. (at starup and periodic)
 - `clear_interval`: Interval (in seconds) for periodic purge of banned IPs from qBittorrent. (`0` to disable)
-- `log_file_path`: Path for the log file (used in the `Qbitban.logger` function).
+- `log_file_path`: Path for the log file.
 
 ## Usage
 
