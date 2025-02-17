@@ -403,7 +403,7 @@ class Qbitban:
 		self.check_interval = self.config["check_interval"]
 		self.last_clearup = 0
 		
-		self.waiting_connection_log = False
+		self.waiting_connection = False
 		
 		self.logger()
 		
@@ -475,15 +475,15 @@ class Qbitban:
 		try:
 			while not self.shutdown_event.is_set():
 				
-				if not self.client.connected.is_set() and not self.waiting_connection_log:
+				if not self.client.connected.is_set() and not self.waiting_connection:
 					log.info("Waiting for connection...")
-					self.waiting_connection_log = True
+					self.waiting_connection = True
 				
 				if not self.client.connected.is_set():
 					try:
 						if await asyncio.wait_for(self.client.connect(), timeout=self.check_interval):
 							
-							self.waiting_connection_log = False
+							self.waiting_connection = False
 							
 							if self.clear_ips:
 								await self.client.clear_ips()
@@ -493,18 +493,19 @@ class Qbitban:
 							
 							monitor_task = asyncio.create_task(self.ban_monitor.torrent_monitor())
 						
-						else:
-							if self.client.login_failed:
+						elif self.client.login_failed:
 								log.error("Shutting down due to invalid credentials.")
 								self.shutdown_event.set()
 								break
-							else:
-								log.debug(f"No connection. Retrying in {self.check_interval}s...")
-								await asyncio.sleep(self.check_interval)
+						else:
+							log.debug(f"No connection. Retrying in {self.check_interval}s...")
+							await asyncio.sleep(self.check_interval)
+							continue
 					
 					except asyncio.TimeoutError:
 						log.warning("Connection attempt timed out. Retrying...")
 						await asyncio.sleep(self.check_interval)
+						continue
 					
 					except Exception as e:
 						log.error(f"Shutting down due to error: {str(e)}")
@@ -517,7 +518,7 @@ class Qbitban:
 				except asyncio.TimeoutError:
 					if not self.client.connected.is_set():
 						log.error("Connection lost...")
-						self.waiting_connection_log = False
+						self.waiting_connection = False
 						
 						if monitor_task:
 							monitor_task.cancel()
