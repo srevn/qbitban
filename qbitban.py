@@ -136,11 +136,11 @@ class QBitClient:
 		self.connected.clear()
 
 class PeerTracker:
-	def __init__(self, client, reset_interval, upspeed_samples, upspeed_interval):
+	def __init__(self, client, upspeed_samples, upspeed_interval, clear_exception):
 		self.client = client
 		self.upspeed_samples = upspeed_samples
 		self.upspeed_interval = upspeed_interval
-		self.tracked_peers = TTLCache(maxsize=1000, ttl=reset_interval)
+		self.tracked_peers = TTLCache(maxsize=1000, ttl=clear_exception)
 
 	def speed_analyzer(self, speeds, ema_weight=0.8, alpha=0.3):
 		if not speeds:
@@ -229,14 +229,14 @@ class PeerTracker:
 			return {}
 
 class BanMonitor:
-	def __init__(self, client, peer_tracker, min_seeders, excluded_tags, reset_interval, check_interval, upspeed_threshold):
+	def __init__(self, client, peer_tracker, min_seeders, excluded_tags, check_interval, upspeed_threshold, clear_exception):
 		self.client = client
 		self.peer_tracker = peer_tracker
 		self.min_seeders = min_seeders
 		self.excluded_tags = excluded_tags
 		self.check_interval = check_interval
 		self.upspeed_threshold = upspeed_threshold
-		self.tracked_torrents = TTLCache(maxsize=1000, ttl=reset_interval)
+		self.tracked_torrents = TTLCache(maxsize=1000, ttl=clear_exception)
 		self.active_monitors = {}
 
 	async def speed_limit(self):
@@ -415,9 +415,9 @@ class Qbitban:
 		
 		self.peer_tracker = PeerTracker(
 			client = self.client,
-			reset_interval = self.config["reset_interval"],
 			upspeed_samples = self.config["upspeed_samples"],
-			upspeed_interval = self.config["upspeed_interval"]
+			upspeed_interval = self.config["upspeed_interval"],
+			clear_exception = self.config["clear_exception"]
 		)
 		
 		self.ban_monitor = BanMonitor(
@@ -425,9 +425,9 @@ class Qbitban:
 			peer_tracker = self.peer_tracker,
 			min_seeders = self.config["min_seeders"],
 			excluded_tags = self.config["excluded_tags"],
-			reset_interval = self.config["reset_interval"],
 			check_interval = self.config["check_interval"],
-			upspeed_threshold = self.config["upspeed_threshold"]
+			upspeed_threshold = self.config["upspeed_threshold"],
+			clear_exception = self.config["clear_exception"]
 		)
 	
 	def logger(self):
