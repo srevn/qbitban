@@ -50,7 +50,7 @@ Update the configuration file `qbitban.json` with your settings. The configurati
 - `excluded_tags`: Tags to bypass monitoring. (`[""]` for none)
 - `check_interval`: Interval (in seconds) for fetching new active torrents data.
 - `clear_exception`: Interval after which cached exceptions for tracked data are cleared. (ttl)
-- `clear_banned_ips`: Boolean to indicate if banned IPs should be cleared. (at startup and periodic)
+- `clear_ips`: Boolean to indicate if previously banned IPs should be cleared. (at startup and periodic)
 - `clear_interval`: Interval (in seconds) for periodic purge of banned IPs from qBittorrent. (`0` to disable)
 - `log_file_path`: Path for the log file.
 
