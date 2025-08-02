@@ -91,7 +91,7 @@ class QBitClient:
 		except Exception as e:
 			log.debug(f"Error in fetch: {str(e)}")
 			self.connected.clear()
-			raise	
+			raise
 	
 	async def clear_ips(self):
 		headers = {**self.headers, "Cookie": f"SID={self.auth_cookie}"}
@@ -434,8 +434,7 @@ class Qbitban:
 		try:
 			log.setLevel(logging.DEBUG)
 			
-			format = logging.Formatter('[%(asctime)s] %(levelname)s: %(message)s', 
-									  datefmt = '%Y-%m-%d %H:%M:%S')
+			format = logging.Formatter('[%(asctime)s] %(levelname)s: %(message)s', datefmt = '%Y-%m-%d %H:%M:%S')
 			
 			file_handler = logging.FileHandler(self.log_file, mode='w')
 			file_handler.setLevel(logging.INFO)
