@@ -5,7 +5,7 @@ import logging
 import signal
 import sys
 import time
-from collections import defaultdict, deque
+from collections import deque
 
 import aiohttp
 from cachetools import TTLCache
@@ -175,8 +175,43 @@ class PeerTracker:
 			log.debug(f"Error while analyzing speed: {str(e)}")
 			return 0
 
+	async def track_peer(self, torrent_hash, peer_id, peer_info):
+		ip = peer_info.get("ip")
+		port = peer_info.get("port", 6881)
+		peer_key = (ip, port)
+		
+		if peer_key in self.tracked_peers:
+			log.debug(f"Skipping measurements for {ip}:{port} as it's listed in the exceptions.")
+			return None
+		
+		if peer_info.get("up_speed", 0) == 0:
+			log.debug(f"Dropping peer {ip}:{port} due to null initial speed.")
+			return None
+		
+		log.info(f"Tracking {ip}:{port} for torrent: {torrent_hash}")
+		speeds = deque(maxlen=self.upspeed_samples)
+		
+		for i in range(self.upspeed_samples):
+			try:
+				peers_data = await self.client.fetch("api/v2/sync/torrentPeers", {"hash": torrent_hash})
+				peers = peers_data.get("peers", {})
+				if peer_id not in peers:
+					log.info(f"Peer {ip}:{port} is no longer present at iteration {i}. Discarding...")
+					return None
+				
+				current_speed = peers[peer_id]["up_speed"]
+				speeds.append(current_speed)
+			
+			except Exception as e:
+				log.debug(f"Error fetching/updating peer data for {ip}:{port}: {str(e)}")
+				return None
+			
+			if i < self.upspeed_samples - 1:
+				await asyncio.sleep(self.upspeed_interval)
+		
+		return peer_key, list(speeds)
+
 	async def track_speed(self, torrent_hash):
-		peer_speeds = defaultdict(lambda: deque(maxlen=self.upspeed_samples))
 		try:
 			initial_peers_data = await self.client.fetch("api/v2/sync/torrentPeers", {"hash": torrent_hash})
 			initial_peers = initial_peers_data.get("peers", {})
@@ -184,45 +219,25 @@ class PeerTracker:
 				log.debug(f"No initial peers for torrent: {torrent_hash}")
 				return {}
 			
-			for peer_id, peer_info in initial_peers.items():
-				ip = peer_info.get("ip")
-				port = peer_info.get("port", 6881)
-				if (ip, port) in self.tracked_peers:
-					log.debug(f"Skipping measurements for {ip}:{port} as it's listed in the exceptions.")
-					continue
-				
-				initial_speed = peer_info.get("up_speed", 0)
-				if initial_speed == 0:
-					log.debug(f"Dropping peer {ip}:{port} due to null initial speed.")
-					continue
-				
-				for i in range(self.upspeed_samples):
-					try:
-						peers_data = await self.client.fetch("api/v2/sync/torrentPeers", {"hash": torrent_hash})
-						peers = peers_data.get("peers", {})
-						if peer_id not in peers:
-							log.info(f"Peer {ip}:{port} is no longer present at iteration {i}. Discarding...")
-							if (ip, port) in peer_speeds:
-								del peer_speeds[(ip, port)]
-							break
-						
-						if i == 0:
-							log.info(f"Tracking {ip}:{port} for torrent: {torrent_hash}")
-						
-						current_speed = peers[peer_id]["up_speed"]
-						peer_speeds[(ip, port)].append(current_speed)
-					
-					except Exception as e:
-						log.debug(f"Error fetching/updating peer data: {str(e)}")
-						return {}
-					
-					await asyncio.sleep(self.upspeed_interval)
+			peer_tasks = [
+				self.track_peer(torrent_hash, peer_id, peer_info)
+				for peer_id, peer_info in initial_peers.items()
+			]
 			
-			return {
-				peer: self.speed_analyzer(list(speeds))
-				for peer, speeds in peer_speeds.items()
-				if speeds
-			}
+			results = await asyncio.gather(*peer_tasks, return_exceptions=True)
+			
+			peer_averages = {}
+			for result in results:
+				if isinstance(result, Exception):
+					log.debug(f"Peer tracking failed: {str(result)}")
+					continue
+				
+				if result:
+					peer_key, speeds = result
+					if peer_key and speeds:
+						peer_averages[peer_key] = self.speed_analyzer(speeds)
+			
+			return peer_averages
 		
 		except Exception as e:
 			log.debug(f"Error while tracking peer speeds: {str(e)}")
